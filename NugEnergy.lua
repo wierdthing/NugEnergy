@@ -9,6 +9,10 @@ local color2 = { .9,0.1,0.4 } -- for dispatch and meta
 local textcolor = { 1,1,1 }
 local onlyText = false
 
+-- Blade Rush talent variables
+local baseTickRate = 2 -- Base tick rate in seconds
+local currentTickRate = 2 -- Current calculated tick rate
+
 local db
 
 NugEnergy = CreateFrame("StatusBar","NugEnergy",UIParent)
@@ -82,36 +86,33 @@ local twCrossfade = 0.15
 local twChangeColor = true
 -- local twPlaySound
 
-
--- local function SetupDefaults(t, defaults)
---     for k,v in pairs(defaults) do
---         if type(v) == "table" then
---             if t[k] == nil then
---                 t[k] = CopyTable(v)
---             else
---                 SetupDefaults(t[k], v)
---             end
---         else
---             if t[k] == nil then t[k] = v end
---         end
---     end
--- end
-
--- local function RemoveDefaults(t, defaults)
---     if not defaults then return end
---     for k, v in pairs(defaults) do
---         if type(t[k]) == 'table' and type(v) == 'table' then
---             ns.RemoveDefaults(t[k], v)
---             if next(t[k]) == nil then
---                 t[k] = nil
---             end
---         elseif t[k] == v then
---             t[k] = nil
---         end
---     end
---     return t
--- end
-
+-- Function to calculate tick rate based on Blade Rush talent and agility
+local function CalculateTickRate()
+    -- Get Blade Rush talent info (talent tree 2, position 16)
+    local _, _, _, _, currRank = GetTalentInfo(2, 16)
+    local bladeRushRank = currRank or 0
+    
+    -- Get player's agility
+    local agility = UnitStat("player", 2)
+    
+    -- Calculate tick rate reduction
+    local reductionPerAgility = 0
+    if bladeRushRank == 1 then
+        reductionPerAgility = 0.0006
+    elseif bladeRushRank == 2 then
+        reductionPerAgility = 0.0012
+    end
+    
+    local totalReduction = reductionPerAgility * agility
+    currentTickRate = baseTickRate - totalReduction
+    
+    -- Ensure tick rate doesn't go below a reasonable minimum (e.g., 0.5 seconds)
+    if currentTickRate < 0.5 then
+        currentTickRate = 0.5
+    end
+    
+    return currentTickRate
+end
 
 function NugEnergy.PLAYER_LOGIN(self,event,arg1)
     NugEnergyDB = NugEnergyDB or {}
@@ -121,6 +122,9 @@ function NugEnergy.PLAYER_LOGIN(self,event,arg1)
 
     twEnabled = db.profile.twEnabled
 
+    -- Calculate initial tick rate
+    CalculateTickRate()
+
     NugEnergy:Create()
     NugEnergy:Initialize()
 
@@ -128,13 +132,6 @@ function NugEnergy.PLAYER_LOGIN(self,event,arg1)
     SLASH_NUGENERGY2= "/nen"
     SlashCmdList["NUGENERGY"] = self.SlashCmd
 end
-
--- function NugComboBar:PLAYER_LOGOUT(event)
--- 	RemoveDefaults(db, defaults)
--- end
-
-
-
 
 -- Ticker
 local lastEnergyTickTime = GetTime()
@@ -160,10 +157,7 @@ local function GetGradientColor(c1, c2, v)
     return r,g,b
 end
 
-
-
 local GetTickProgress = function() return GetTime() - lastEnergyTickTime end
-
 
 local ClassicTickerColorUpdate = function(self, tp, prevColor)
     local twSecondThreshold = twStart + twLength
@@ -185,7 +179,6 @@ local ClassicTickerColorUpdate = function(self, tp, prevColor)
         self:SetColor(unpack(cN))
     end
 end
-
 
 local ClassicTickerFrame = CreateFrame("Frame")
 
@@ -218,7 +211,8 @@ local ClassicTickerOnUpdate = function(self)
             end
         end
     end
-    if now >= lastEnergyTickTime + 2 then
+    -- Use dynamic tick rate instead of hardcoded 2 seconds
+    if now >= lastEnergyTickTime + currentTickRate then
         possibleTick = true
     end
     if possibleTick then
@@ -227,6 +221,7 @@ local ClassicTickerOnUpdate = function(self)
     end
     lastEnergyValue = currentEnergy
 end
+
 ClassicTickerFrame.Enable = function(self)
     self:SetScript("OnUpdate", ClassicTickerOnUpdate)
     tickerEnabled = true
@@ -237,12 +232,13 @@ ClassicTickerFrame.Disable = function(self)
     tickerEnabled = false
     self.isEnabled = false
 end
+
 local UNIT_MAXPOWER_ClassicTicker = function(self)
     maxEnergy = UnitManaMax("player")
-    self:SetMinMaxValues(0, 2)
+    -- Recalculate tick rate when max power changes (could indicate talent/stat changes)
+    CalculateTickRate()
+    self:SetMinMaxValues(0, currentTickRate)
 end
-
-
 
 -- Power Getter Gen
 local RageBarGetPower = function(shineZone, cappedZone, minLimit, throttleText)
@@ -258,7 +254,6 @@ local RageBarGetPower = function(shineZone, cappedZone, minLimit, throttleText)
         return p, p2, execute, shine, capped, (minLimit and p < minLimit)
     end
 end
-
 
 do
     local timerFrame
@@ -285,6 +280,19 @@ do
     end
 end
 
+-- Event handlers for talent and stat changes
+function NugEnergy.CHARACTER_POINTS_CHANGED(self)
+    -- Recalculate tick rate when talents change
+    CalculateTickRate()
+end
+
+function NugEnergy.UNIT_STATS(self, event, unit)
+    -- Recalculate tick rate when player stats change
+    if unit == "player" then
+        CalculateTickRate()
+    end
+end
+
 function NugEnergy.Initialize(self)
     self.UNIT_ENERGY = self.UNIT_POWER
     self.UNIT_MAXENERGY = self.UNIT_MAXPOWER
@@ -305,6 +313,8 @@ function NugEnergy.Initialize(self)
         self:RegisterEvent("UNIT_AURA")
         self:RegisterEvent("UNIT_ENERGY")
         self:RegisterEvent("UNIT_MAXENERGY")
+        self:RegisterEvent("CHARACTER_POINTS_CHANGED")
+        self:RegisterEvent("UNIT_STATS")
 
         if true then
             GetPower = GetPower_ClassicRogueTicker(nil, 19, 0, false)
@@ -318,6 +328,8 @@ function NugEnergy.Initialize(self)
         self:RegisterEvent("UNIT_DISPLAYPOWER")
         self:RegisterEvent("UPDATE_STEALTH")
         self:RegisterEvent("UNIT_AURA")
+        self:RegisterEvent("CHARACTER_POINTS_CHANGED")
+        self:RegisterEvent("UNIT_STATS")
         local switchFromEnergyTimestamp = GetTime()
         local energyInHumanFormTimer
 
@@ -334,15 +346,6 @@ function NugEnergy.Initialize(self)
         end
 
         self:SetScript("OnUpdate",function() NugEnergy:UpdateEnergy() end)
-        -- self.UNIT_DISPLAYPOWER = function(self)
-        --     if UnitPowerType("player") == PowerTypeEnum.ENERGY then
-        --         PowerFilter = PowerTypeEnum.ENERGY
-        --     elseif db.profile.rage then
-        --         PowerFilter = PowerTypeEnum.RAGE
-        --     end
-        --     self:UPDATE_STEALTH()
-        -- end
-        -- self:UNIT_DISPLAYPOWER()
 
         self.UNIT_DISPLAYPOWER = function(self)
             local newPowerType = UnitPowerType("player")
@@ -419,7 +422,6 @@ function NugEnergy.Initialize(self)
         self:RegisterEvent("UNIT_RAGE")
         self:RegisterEvent("UNIT_MAXRAGE")
 
-
         GetPower = RageBarGetPower(30, 10, nil, nil)
         -- if IsAnySpellKnown(20662, 20661, 20660, 20658, 5308) then
         --     execute_range = 0.2
@@ -437,8 +439,6 @@ function NugEnergy.Initialize(self)
     self:UNIT_POWER(nil, "player", PowerFilter)
     return true
 end
-
-
 
 function FindUnitAuraByIcon(unit, searchIcon)
 	for i=1,32 do
@@ -465,8 +465,6 @@ else
     end
 end
 
-
-
 function NugEnergy.UNIT_POWER(self,event,unit,powertype)
     self:UpdateEnergy()
     if not shouldBeFull then
@@ -474,15 +472,6 @@ function NugEnergy.UNIT_POWER(self,event,unit,powertype)
     end
 end
 function NugEnergy.UpdateEnergy(self)
-    -- print(this:GetName(), this.text.SetText)
-    -- local p, p2 = GetPower("player")
-    -- p2 = p2 or p
-    -- this.text:SetText(p2)
-    -- if not onlyText then
-    --     this:SetValue(p)
-    -- end
-
-
     local p, p2, _, shine, capped, insufficient = GetPower("player")
     local wasFull = isFull
     isFull = p == GetPowerMax("player", PowerTypeIndex)
@@ -496,18 +485,9 @@ function NugEnergy.UpdateEnergy(self)
     if p2 > 200 then p2 = "" end
     self.text:SetText(p2)
     if not onlyText then
-        -- if shine and upvalueInCombat then
-        --     -- self.glow:Show()
-        --     if not self.glow:IsPlaying() then self.glow:Play() end
-        -- else
-        --     -- self.glow:Hide()
-        --     self.glow:Stop()
-        -- end
         local c
         if capped then
             c = maxColor
-        -- elseif execute then
-        --     c = NugEnergy.db.profile.altColor
         elseif insufficient then
             c = lowColor
         else
@@ -517,20 +497,6 @@ function NugEnergy.UpdateEnergy(self)
         self:SetColor(unpack(c))
 
         if twEnabled and tickerEnabled and (not twEnabledCappedOnly or capped) and GetTickProgress() > twStart then
-
-            -- if twPlaySound then
-            --     local now = GetTime()
-            --     heartbeatEligible = IsStealthed() and UnitExists("target") and not UnitIsFriend("target", "player") and GetUnitSpeed("player") > 0
-            --     if heartbeatEligible then
-            --         heartbeatEligibleLastTime = now
-            --     end
-
-            --     if not heartbeatPlayed and now - heartbeatEligibleLastTime < heartbeatEligibleTimeout then
-            --         heartbeatPlayed = true
-            --         self:PlaySound()
-            --     end
-            -- end
-
             if twChangeColor then
                 ClassicTickerColorUpdate(self, GetTickProgress(), c)
             end
@@ -539,25 +505,22 @@ function NugEnergy.UpdateEnergy(self)
         self:SetValue(p)
     end
 end
+
 function NugEnergy.UNIT_MAXPOWER(self)
     self:SetMinMaxValues(0,GetPowerMax("player"))
 end
 NugEnergy.NORMAL_UNIT_MAXPOWER = NugEnergy.UNIT_MAXPOWER
 
 function NugEnergy.UPDATE_STEALTH(self)
-    -- print("Update Stealth", IsStealthed() or UnitAffectingCombat("player"), (not isEmpty and not shouldBeFull), PowerFilter)
     if (IsStealthed() or UnitAffectingCombat("player") or ForcedToShow or (not isEmpty and not shouldBeFull)) and PowerFilter then
         self:UNIT_MAXPOWER()
         self:UpdateEnergy()
         self:Show()
-        -- print("Showing")
     else
         self:Hide()
-        -- print("Hiding")
     end
 end
 NugEnergy.UNIT_AURA = NugEnergy.UPDATE_STEALTH
-
 
 function NugEnergy:UpdateFrameBorder()
     local borderType = NugEnergy.db.profile.borderType
@@ -592,7 +555,6 @@ function NugEnergy:UpdateFrameBorder()
         border:SetPoint("BOTTOMRIGHT", 3, -3)
         border:SetBackdrop({
             edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 16,
-            -- insets = {left = -5, right = -5, top = -5, bottom = -5},
         })
         border:SetBackdropBorderColor(0.55,0.55,0.55)
         border:Show()
@@ -621,10 +583,8 @@ end
 
 function NugEnergy:ResizeText()
     local text = self.text
-    -- local font = getFont()
     local fontSize = NugEnergy.db.profile.fontSize
     text:SetFont(font,fontSize, NugEnergy.db.profile.textOutline)
-    -- local r,g,b,a = unpack(NugEnergy.db.profile.textColor)
     local r,g,b,a = 1,1,1,0.7
     text:SetTextColor(r,g,b)
     text:SetAlpha(a)
@@ -641,12 +601,6 @@ function NugEnergy.Create(self)
     f:SetHeight(height)
 
     if not onlyText then
-        -- local backdrop = {
-        --     bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", tile = true, tileSize = 0,
-        --     insets = {left = -2, right = -2, top = -2, bottom = -2},
-        -- }
-        -- f:SetBackdrop(backdrop)
-        -- f:SetBackdropColor(0,0,0,0.5)
         f:SetStatusBarTexture(tex)
         f:SetStatusBarColor(unpack(color))
 
@@ -661,11 +615,9 @@ function NugEnergy.Create(self)
     end
 
     local text = f:CreateFontString(nil, "OVERLAY")
-    -- text:SetFont(font,fontSize)
     text:SetPoint("TOPLEFT",f,"TOPLEFT",0,0)
     text:SetPoint("BOTTOMRIGHT",f,"BOTTOMRIGHT",-10,0)
     text:SetJustifyH("RIGHT")
-    -- text:SetTextColor(unpack(textcolor))
     f.text = text
     NugEnergy:ResizeText()
 
@@ -700,6 +652,7 @@ local ParseOpts = function(str)
     end
     return fields
 end
+
 function NugEnergy.SlashCmd(msg)
     local _,_,k,v = string.find(msg, "([%w%+%-%=]+) ?(.*)")
     if not k or k == "help" then print([[Usage:
@@ -709,6 +662,7 @@ function NugEnergy.SlashCmd(msg)
       |cff00ff00/nen energy|r
       |cff00ff00/nen powerTypeColor|r
       |cff00ff00/nen tickWindow|r
+      |cff00ff00/nen tickrate|r - Show current tick rate
       |cff00ff00/nen reset|r]]
     )end
     if k == "unlock" then
@@ -728,25 +682,26 @@ function NugEnergy.SlashCmd(msg)
         db.profile.twEnabled = not db.profile.twEnabled
         twEnabled = db.profile.twEnabled
     end
+    if k == "tickrate" then
+        local name, icon, tier, column, currRank, maxRank = GetTalentInfo(2, 16)
+        local agility = UnitStat("player", 2)
+        CalculateTickRate()
+        print(string.format("Blade Rush Rank: %d, Agility: %d, Current Tick Rate: %.3f seconds", 
+            currRank or 0, agility, currentTickRate))
+    end
     if k == "powerTypeColor" then
         db.profile.enableColorByPowerType = not db.profile.enableColorByPowerType
         NugEnergy:SetNormalColor()
     end
-
     if k == "rage" then
         db.profile.rage = not db.profile.rage
         NugEnergy:Initialize()
     end
-
     if k == "energy" then
         db.profile.energy = not db.profile.energy
         NugEnergy:Initialize()
     end
 end
-
-
-
-
 
 local function rgb2hsv (r, g, b)
     local rabs, gabs, babs, rr, gg, bb, h, s, v, diff, diffc, percentRoundFn
@@ -756,7 +711,6 @@ local function rgb2hsv (r, g, b)
     v = math.max(rabs, gabs, babs)
     diff = v - math.min(rabs, gabs, babs);
     diffc = function(c) return (v - c) / 6 / diff + 1 / 2 end
-    -- percentRoundFn = function(num) return math.floor(num * 100) / 100 end
     if (diff == 0) then
         h = 0
         s = 0
@@ -829,10 +783,7 @@ function hsv_shift(src, hm,sm,vm)
     return r2, g2, b2
 end
 
-
-
 local colorOverride = nil
--- local cor, cog, cob = 1,1,1
 function NugEnergy:DisableColorOverride()
     colorOverride = nil
 end
